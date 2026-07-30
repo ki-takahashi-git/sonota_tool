@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ファイル名一括変換ツール</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Yu Gothic UI', 'Meiryo', sans-serif; background: #f0f4f8; color: #333; min-height: 100vh; display: flex; flex-direction: column; }
+
+header { background: #2c5f8a; color: white; padding: 14px 24px; }
+header h1 { font-size: 17px; font-weight: bold; }
+header p  { font-size: 11px; color: #aed6f1; margin-top: 3px; }
+
+main { flex: 1; padding: 14px 20px; display: flex; flex-direction: column; gap: 10px; }
+
+.card { background: white; border-radius: 8px; padding: 14px 16px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+.card-label { font-size: 11px; font-weight: bold; color: #666; margin-bottom: 8px; }
+
+.info-box { background: #e8f4fd; border-left: 4px solid #2c5f8a; border-radius: 0 6px 6px 0; padding: 10px 14px; font-size: 12px; color: #1a4a6e; line-height: 1.7; }
+.info-box strong { display: block; margin-bottom: 4px; font-size: 13px; }
+
+.folder-row { display: flex; gap: 8px; align-items: center; }
+.folder-input { flex: 1; padding: 7px 10px; border: 1px solid #ddd; border-radius: 6px; font-family: inherit; font-size: 13px; background: #f9f9f9; min-width: 0; }
+
+.btn { padding: 7px 16px; border: none; border-radius: 6px; cursor: pointer; font-family: inherit; font-size: 13px; font-weight: bold; white-space: nowrap; transition: filter .15s; }
+.btn:disabled { opacity: .4; cursor: not-allowed; }
+.btn:not(:disabled):hover { filter: brightness(1.1); }
+.btn-blue   { background: #2c5f8a; color: white; }
+.btn-green  { background: #27ae60; color: white; }
+.btn-dl     { background: #8e44ad; color: white; }
+.btn-gray   { background: #7f8c8d; color: white; }
+
+.btn-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.ml-auto { margin-left: auto; }
+
+.progress { height: 3px; background: #e0e0e0; border-radius: 2px; overflow: hidden; }
+.progress-bar { height: 100%; background: #2c5f8a; width: 0; }
+.progress-bar.run { animation: slide 1s ease-in-out infinite; }
+@keyframes slide { 0%{transform:translateX(-100%);width:40%} 100%{transform:translateX(300%);width:40%} }
+
+.table-wrap { overflow: auto; border: 1px solid #e8e8e8; border-radius: 6px; max-height: 420px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+thead th { background: #f0f4f8; padding: 8px 10px; text-align: left; font-weight: bold; border-bottom: 2px solid #ddd; position: sticky; top: 0; z-index: 1; white-space: nowrap; }
+tbody td { padding: 5px 10px; border-bottom: 1px solid #f0f0f0; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+tr.is-folder { background: #f0f7ff; }
+.center { text-align: center; }
+.badge { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px; font-weight: bold; }
+.bf { background: #e8f5e9; color: #2e7d32; }
+.bd { background: #e3f2fd; color: #1565c0; }
+.arrow { color: #bbb; text-align: center; }
+.new-name { color: #1a6e2e; font-weight: bold; }
+.path-cell { color: #999; font-size: 11px; }
+.empty { text-align: center; padding: 32px; color: #bbb; font-size: 14px; }
+
+.status { background: white; border-top: 1px solid #e0e0e0; padding: 7px 20px; font-size: 12px; color: #666; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>📁 ファイル名一括変換ツール</h1>
+  <p>カナ全角・英数半角 ガイドライン準拠版</p>
+</header>
+
+<main>
+
+  <div class="info-box">
+    <strong>使い方</strong>
+    ① フォルダを選択してスキャン → 変更内容をプレビューで確認<br>
+    ② PowerShellスクリプトをダウンロード → ダブルクリックで実行するとリネームされます
+  </div>
+
+  <!-- フォルダ選択 -->
+  <div class="card">
+    <div class="card-label">対象フォルダ</div>
+    <div class="folder-row">
+      <input class="folder-input" id="folderName" readonly placeholder="フォルダを選択してください...">
+      <button class="btn btn-blue" id="btnSelect">📁 フォルダを選択</button>
+      <input type="file" id="filePicker" webkitdirectory multiple style="display:none">
+    </div>
+  </div>
+
+  <!-- ボタン -->
+  <div class="btn-row">
+    <button class="btn btn-green"  id="btnScan" disabled>🔍 スキャン（プレビュー）</button>
+    <button class="btn btn-dl ml-auto" id="btnDl" disabled>📥 PowerShellスクリプトをダウンロード</button>
+    <button class="btn btn-gray"   id="btnCsv" disabled>💾 CSVで保存</button>
+  </div>
+
+  <div class="progress"><div class="progress-bar" id="progressBar"></div></div>
+
+  <!-- プレビュー -->
+  <div class="card" style="padding:0; overflow:hidden;">
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th class="center" style="width:72px">種別</th>
+            <th>変更前</th>
+            <th class="arrow" style="width:28px"></th>
+            <th>変更後</th>
+            <th>パス</th>
+          </tr>
+        </thead>
+        <tbody id="previewBody">
+          <tr><td colspan="5" class="empty">フォルダを選択してスキャンしてください</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</main>
+
+<div class="status" id="statusBar">準備完了</div>
+
+<script>
+// ════════════ 変換ロジック ════════════
+
+const HK={'ｦ':'ヲ','ｧ':'ァ','ｨ':'ィ','ｩ':'ゥ','ｪ':'ェ','ｫ':'ォ','ｬ':'ャ','ｭ':'ュ','ｮ':'ョ','ｯ':'ッ','ｰ':'ー','ｱ':'ア','ｲ':'イ','ｳ':'ウ','ｴ':'エ','ｵ':'オ','ｶ':'カ','ｷ':'キ','ｸ':'ク','ｹ':'ケ','ｺ':'コ','ｻ':'サ','ｼ':'シ','ｽ':'ス','ｾ':'セ','ｿ':'ソ','ﾀ':'タ','ﾁ':'チ','ﾂ':'ツ','ﾃ':'テ','ﾄ':'ト','ﾅ':'ナ','ﾆ':'ニ','ﾇ':'ヌ','ﾈ':'ネ','ﾉ':'ノ','ﾊ':'ハ','ﾋ':'ヒ','ﾌ':'フ','ﾍ':'ヘ','ﾎ':'ホ','ﾏ':'マ','ﾐ':'ミ','ﾑ':'ム','ﾒ':'メ','ﾓ':'モ','ﾔ':'ヤ','ﾕ':'ユ','ﾖ':'ヨ','ﾗ':'ラ','ﾘ':'リ','ﾙ':'ル','ﾚ':'レ','ﾛ':'ロ','ﾜ':'ワ','ﾝ':'ン'};
+const DK={'カ':'ガ','キ':'ギ','ク':'グ','ケ':'ゲ','コ':'ゴ','サ':'ザ','シ':'ジ','ス':'ズ','セ':'ゼ','ソ':'ゾ','タ':'ダ','チ':'ヂ','ツ':'ヅ','テ':'デ','ト':'ド','ハ':'バ','ヒ':'ビ','フ':'ブ','ヘ':'ベ','ホ':'ボ','ウ':'ヴ'};
+const HD={'ハ':'パ','ヒ':'ピ','フ':'プ','ヘ':'ペ','ホ':'ポ'};
+const RULES=[['－','-'],['※','注'],['①','_1'],['②','_2'],['③','_3'],['④','_4'],['⑤','_5'],['⑥','_6'],['⑦','_7'],['⑧','_8'],['⑨','_9'],['（','('],['）',')'],['【','('],['】',')'],['［','('],['］',')'],['『','('],['』',')'],['｛','('],['｝',')'],['〈','('],['〉',')'],['＜','('],['＞',')']];
+const ALLOWED=/^[ぁ-んァ-ヶa-zA-Z0-9ー()_一-龥々\-△]$/;
+
+function h2z(s){const a=[...s],r=[];let i=0;while(i<a.length){const c=a[i],z=HK[c];if(z){const n=a[i+1];if(n==='ﾞ'&&DK[z]){r.push(DK[z]);i+=2;continue;}if(n==='ﾟ'&&HD[z]){r.push(HD[z]);i+=2;continue;}r.push(z);}else r.push(c);i++;}return r.join('');}
+function z2h(s){return[...s].map(c=>{const v=c.codePointAt(0);if(v>=0xFF10&&v<=0xFF19)return String.fromCodePoint(v-0xFF10+0x30);if(v>=0xFF21&&v<=0xFF3A)return String.fromCodePoint(v-0xFF21+0x41);if(v>=0xFF41&&v<=0xFF5A)return String.fromCodePoint(v-0xFF41+0x61);return c;}).join('');}
+function calcNewName(name, isFile){
+  let raw,ext;
+  if(isFile){const d=name.lastIndexOf('.');raw=d>0?name.slice(0,d):name;ext=d>0?name.slice(d):'';}
+  else{raw=name;ext='';}
+  raw=h2z(raw);raw=z2h(raw);
+  for(const[f,t]of RULES)raw=raw.split(f).join(t);
+  raw=[...raw].map(c=>ALLOWED.test(c)?c:'_').join('');
+  while(raw.includes('__'))raw=raw.split('__').join('_');
+  raw=raw.replace(/^[ _()\-△]+/,'').replace(/_+$/,'');
+  if(!raw.trim())raw='renamed_'+String(Date.now()).slice(-4);
+  return raw+ext;
+}
+
+// ════════════ UI ════════════
+
+const $=id=>document.getElementById(id);
+const btnSelect=$('btnSelect'), btnScan=$('btnScan'), btnDl=$('btnDl'), btnCsv=$('btnCsv');
+const filePicker=$('filePicker'), folderName=$('folderName');
+const tbody=$('previewBody'), statusBar=$('statusBar'), progBar=$('progressBar');
+
+let allFiles=[], items=[];
+
+function setStatus(m){statusBar.textContent=m;}
+function setBusy(b){progBar.className='progress-bar'+(b?' run':'');}
+
+function render(list){
+  if(!list.length){tbody.innerHTML='<tr><td colspan="5" class="empty">変更が必要なファイル・フォルダはありませんでした</td></tr>';return;}
+  tbody.innerHTML=list.map(it=>{
+    const badge=it.isFile?'<span class="badge bf">ファイル</span>':'<span class="badge bd">フォルダ</span>';
+    const dir=it.relDir||'(ルート)';
+    return`<tr${it.isFile?'':' class="is-folder"'}><td class="center">${badge}</td><td title="${it.name}">${it.name}</td><td class="arrow">→</td><td class="new-name">${it.nn}</td><td class="path-cell" title="${dir}">${dir}</td></tr>`;
+  }).join('');
+}
+
+// フォルダ選択ボタン
+btnSelect.addEventListener('click',()=>filePicker.click());
+
+filePicker.addEventListener('change',()=>{
+  allFiles=[...filePicker.files];
+  if(!allFiles.length)return;
+  // ルートフォルダ名を取得
+  const root=allFiles[0].webkitRelativePath.split('/')[0];
+  folderName.value=root;
+  btnScan.disabled=false;
+  btnDl.disabled=true; btnCsv.disabled=true;
+  tbody.innerHTML='<tr><td colspan="5" class="empty">スキャンボタンを押してください</td></tr>';
+  setStatus(root+'  —  '+allFiles.length+' ファイルを読み込みました');
+});
+
+// スキャン
+btnScan.addEventListener('click',()=>{
+  if(!allFiles.length)return;
+  setBusy(true);
+  setStatus('スキャン中...');
+
+  // ファイルエントリ
+  const fileItems=allFiles.map(f=>{
+    const parts=f.webkitRelativePath.split('/');
+    const name=parts[parts.length-1];
+    const relDir=parts.slice(1,-1).join('/');   // ルートを除いたフォルダパス
+    const nn=calcNewName(name,true);
+    return{name,nn,relDir,relPath:parts.slice(1).join('/'),isFile:true,depth:parts.length-1};
+  }).filter(it=>it.name!==it.nn);
+
+  // フォルダエントリ（ファイルパスから抽出）
+  const dirSet=new Set();
+  allFiles.forEach(f=>{
+    const parts=f.webkitRelativePath.split('/').slice(1,-1); // ルート除く、ファイル名除く
+    for(let i=1;i<=parts.length;i++) dirSet.add(parts.slice(0,i).join('/'));
+  });
+  const folderItems=[...dirSet].map(p=>{
+    const parts=p.split('/');
+    const name=parts[parts.length-1];
+    const relDir=parts.slice(0,-1).join('/');
+    const nn=calcNewName(name,false);
+    return{name,nn,relDir,relPath:p,isFile:false,depth:parts.length};
+  }).filter(it=>it.name!==it.nn);
+
+  // 深い順にソート
+  items=[...fileItems,...folderItems].sort((a,b)=>b.depth-a.depth);
+  render(items);
+  setBusy(false);
+  setStatus(items.length+' 件が変換対象です。スクリプトをダウンロードして実行してください。');
+  btnDl.disabled=!items.length; btnCsv.disabled=!items.length;
+});
+
+// PowerShellスクリプト生成・ダウンロード
+btnDl.addEventListener('click',()=>{
+  if(!items.length)return;
+  const root=folderName.value;
+  let ps='# ファイル名一括変換スクリプト\n';
+  ps+='# 対象フォルダのフルパスを設定してください\n';
+  ps+=`$root = "${root}"  # ← ここを実際のフォルダのフルパスに変更してください\n\n`;
+  ps+='# 深い階層から順にリネーム\n';
+
+  for(const it of items){
+    const dir=it.relDir?`${it.relDir}/`:'';
+    const oldPath=`$root\\${(dir+it.name).replace(/\//g,'\\')}`;
+    ps+=`Rename-Item -LiteralPath "${oldPath}" -NewName "${it.nn}"\n`;
+  }
+
+  const blob=new Blob(['﻿'+ps],{type:'text/plain;charset=utf-8'});
+  const a=Object.assign(document.createElement('a'),{href:URL.createObjectURL(blob),download:'rename_execute.ps1'});
+  a.click();
+  setStatus('スクリプトをダウンロードしました。$root のパスを修正してから実行してください。');
+});
+
+// CSV保存
+btnCsv.addEventListener('click',()=>{
+  if(!items.length)return;
+  const rows=[['種別','変更前','変更後','フォルダパス']];
+  for(const it of items)rows.push([it.isFile?'ファイル':'フォルダ',it.name,it.nn,it.relDir]);
+  const csv='﻿'+rows.map(r=>r.map(c=>`"${c}"`).join(',')).join('\r\n');
+  const a=Object.assign(document.createElement('a'),{href:URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8;'})),download:`RenameLog_${new Date().toISOString().slice(0,16).replace(/[T:]/g,'')}.csv`});
+  a.click();
+  setStatus('CSVを保存しました');
+});
+</script>
+</body>
+</html>

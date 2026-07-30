@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>製品構成 逆検索ツール</title>
+<style>
+  :root{ --blue:#2980b9; --blue-d:#1f6390; --bg:#f5f7fa; --line:#dde3ea; }
+  *{ box-sizing:border-box; }
+  html,body{ height:100%; }
+  body{ margin:0; font-family:"Segoe UI","Meiryo",system-ui,sans-serif;
+        color:#1f2a37; background:var(--bg);
+        display:flex; flex-direction:column; min-height:100vh; }
+  header{ background:#fff; border-bottom:1px solid var(--line);
+          padding:12px 18px; display:flex; align-items:center; gap:14px; }
+  header h1{ font-size:18px; margin:0; }
+  .badge{ font-size:13px; font-weight:600; padding:4px 10px;
+          border-radius:14px; background:#eef2f6; color:#64748b; white-space:nowrap; }
+  .badge.ok{ background:#e6f5ec; color:#1e8449; }
+  .badge.demo{ background:#fdecea; color:#c0392b; }
+  .badge.ng{ background:#fdecea; color:#c0392b; }
+  .badge.load{ background:#eaf2fb; color:#2980b9; }
+  .loadinfo{ font-size:12px; color:#64748b; white-space:nowrap; }
+  .spacer{ margin-left:auto; }
+  main{ display:flex; gap:14px; padding:14px; align-items:stretch;
+        flex:1 1 auto; min-height:0; }
+  .panel{ background:#fff; border:1px solid var(--line); border-radius:10px; padding:14px; }
+  .left{ width:280px; flex:none; display:flex; flex-direction:column; }
+  .right{ flex:1; min-width:0; display:flex; flex-direction:column; }
+  label.cap{ font-size:13px; font-weight:600; color:#475569; margin-bottom:6px; display:block; }
+  textarea{ width:100%; flex:1; min-height:340px; resize:vertical; font-family:Consolas,monospace;
+            font-size:14px; padding:8px; border:1px solid var(--line); border-radius:8px; }
+  button{ font-size:14px; font-weight:600; border:0; border-radius:8px; padding:9px 14px;
+          cursor:pointer; background:var(--blue); color:#fff; }
+  button:hover{ background:var(--blue-d); }
+  button.ghost{ background:#fff; color:var(--blue); border:1px solid var(--blue); }
+  button:disabled{ opacity:.5; cursor:not-allowed; }
+  .small{ font-size:13px; padding:7px 11px; }
+  .toolbar{ display:flex; gap:8px; align-items:center; margin-bottom:10px; flex-wrap:wrap; }
+  .toolbar .sp{ flex:1; }
+  /* 進捗バー */
+  .progwrap{ display:none; margin-bottom:10px; }
+  .progwrap.show{ display:block; }
+  .progbar{ height:10px; background:#e8eef5; border-radius:6px; overflow:hidden; }
+  .progbar > i{ display:block; height:100%; width:0%; background:var(--blue);
+                transition:width .3s ease; }
+  .progtext{ font-size:12px; color:#475569; margin-top:4px; }
+  .tablewrap{ overflow:auto; border:1px solid var(--line); border-radius:8px; flex:1; min-height:320px; }
+  table{ border-collapse:collapse; width:100%; font-size:13px; white-space:nowrap; }
+  th,td{ border-bottom:1px solid #eef1f5; padding:6px 10px; text-align:left; }
+  th{ position:sticky; top:0; background:#f0f5fa; color:#334155; z-index:1; }
+  td.num{ text-align:right; }
+  td.ctr{ text-align:center; }
+  tr.group-start td{ border-top:2px solid #cbd5e1; }
+  .muted{ color:#94a3b8; }
+  .status{ font-size:13px; color:#475569; min-height:18px; }
+  .hint{ font-size:12px; color:#94a3b8; margin-top:6px; }
+  .spinner{ display:inline-block; width:14px; height:14px; border:2px solid #cbd5e1;
+            border-top-color:var(--blue); border-radius:50%; animation:sp .8s linear infinite;
+            vertical-align:-2px; margin-right:6px; }
+  @keyframes sp{ to{ transform:rotate(360deg); } }
+  /* モーダル（操作マニュアル） */
+  .modal{ display:none; position:fixed; inset:0; background:rgba(15,23,42,.45); z-index:50; }
+  .modal.show{ display:flex; align-items:center; justify-content:center; padding:24px; }
+  .modal .box{ background:#fff; max-width:760px; width:100%; max-height:84vh; overflow:auto;
+               border-radius:12px; padding:22px 26px; box-shadow:0 10px 40px rgba(0,0,0,.25); }
+  .modal h2{ margin:0 0 6px; font-size:20px; }
+  .modal h3{ margin:18px 0 6px; font-size:15px; color:var(--blue-d);
+             border-left:4px solid var(--blue); padding-left:8px; }
+  .modal p, .modal li{ font-size:13.5px; line-height:1.7; }
+  .modal table{ white-space:normal; margin:6px 0; }
+  .modal th,.modal td{ border:1px solid var(--line); padding:5px 8px; }
+  .modal .close{ float:right; }
+  .modal code{ background:#eef2f6; padding:1px 5px; border-radius:4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>製品構成 逆検索ツール</h1>
+  <span id="badge" class="badge load">マスタ読込中...</span>
+  <span id="loadinfo" class="loadinfo"></span>
+  <span class="spacer"></span>
+  <button class="ghost small" onclick="openManual()">📖 操作マニュアル</button>
+</header>
+
+<main>
+  <section class="panel left">
+    <label class="cap">検索する部品コード（1行に1コード）</label>
+    <textarea id="parts" placeholder="例）&#10;PART-X&#10;PART-Y"></textarea>
+    <div class="hint">複数行まとめて検索できます。</div>
+    <div style="margin-top:10px; display:flex; gap:8px;">
+      <button class="ghost small" onclick="clearParts()">入力クリア</button>
+    </div>
+  </section>
+
+  <section class="panel right">
+    <div class="progwrap" id="progwrap">
+      <div class="progbar"><i id="progfill"></i></div>
+      <div class="progtext" id="progtext">マスタを読み込んでいます...</div>
+    </div>
+    <div class="toolbar">
+      <button id="b-kishu" onclick="doSearch('kishu')" disabled>① 機種コード逆展開検索</button>
+      <button id="b-choku" onclick="doSearch('chokujou')" disabled>② 直上親コード検索</button>
+      <span class="sp"></span>
+      <button class="ghost small" id="b-xlsx" onclick="download('xlsx')" disabled>Excel保存</button>
+    </div>
+    <div class="status" id="status"></div>
+    <div class="tablewrap">
+      <table id="result">
+        <thead><tr><th class="muted">検索結果がここに表示されます</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<!-- 操作マニュアル モーダル -->
+<div class="modal" id="manual" onclick="if(event.target===this)closeManual()">
+  <div class="box">
+    <button class="ghost small close" onclick="closeManual()">閉じる ✕</button>
+    <h2>操作マニュアル</h2>
+    <p class="muted">製品構成 逆検索ツール（ブラウザ版）。部品コードから上位の機種や親アセンブリを逆引きします。
+       DBへは参照(SELECT)のみで、データの書き換えは行いません。</p>
+
+    <h3>1. 準備（マスタ読込）</h3>
+    <p>起動すると自動でTPiCSのマスタを読み込みます。画面上部のバーが100%になり、右上が
+       <b>緑「本番(マスタ取得済)」</b> になれば準備完了です。読込中は検索ボタンは押せません。
+       本番ではVPN等でDBに接続できる必要があります。</p>
+
+    <h3>2. 検索のしかた</h3>
+    <ol>
+      <li>左の欄に部品コードを <b>1行に1コード</b> で入力します（複数まとめてOK）。</li>
+      <li>目的に応じて検索ボタンを押します。
+        <ul>
+          <li><b>① 機種コード逆展開検索</b>：その部品を使う <b>最上位の機種</b> を一覧。1台あたりの使用数合計・客先品目コードも表示。</li>
+          <li><b>② 直上親コード検索</b>：その部品の <b>直上の親</b>（<code>TD-</code> で始まる仮の親は自動でスキップ）を表示。親の名称・代表機種・メーカー名も表示。</li>
+        </ul>
+      </li>
+    </ol>
+
+    <h3>3. 結果の見方</h3>
+    <p><b>機種コード逆展開検索</b></p>
+    <table>
+      <tr><th>列</th><th>意味</th></tr>
+      <tr><td>検索した部品</td><td>入力した部品コード</td></tr>
+      <tr><td>機種コード</td><td>その部品を使う最上位の機種（最新リビジョンのみ表示）</td></tr>
+      <tr><td>使用数</td><td>機種1台あたりに使われる合計数</td></tr>
+      <tr><td>客先品目コード</td><td>機種に紐づく客先側のコード</td></tr>
+    </table>
+    <p><b>直上親コード検索</b></p>
+    <table>
+      <tr><th>列</th><th>意味</th></tr>
+      <tr><td>機種コード／使用数(合計)</td><td>最上位機種と、その1台あたり合計使用数</td></tr>
+      <tr><td>直上親コード／直上親名称</td><td>部品のすぐ上の親（TD-仮親はスキップ）とその名称</td></tr>
+      <tr><td>使用数(直上)</td><td>直上親1個あたりの使用数</td></tr>
+      <tr><td>部品名称／代表機種コード(直上)／メーカー名</td><td>付随する参考情報</td></tr>
+      <tr><td>重複</td><td>同じ部品×同じ直上親が複数機種に出る場合に「*」</td></tr>
+    </table>
+    <p class="muted">同じ値が続く欄は見やすさのため2行目以降は空白表示にしています。</p>
+
+    <h3>4. 保存（ダウンロード）</h3>
+    <p>検索後、<b>Excel保存</b>（.xlsx）で結果を書き出せます。「名前を付けて保存」ダイアログで保存先を選べます。</p>
+
+    <h3>5. マスタを最新にしたいとき</h3>
+    <p>マスタは起動時に読み込み、サーバが動いている間は保持します。最新化するには、起動した黒い
+       ウィンドウ（<code>run.bat</code>）を閉じてから、もう一度 <code>run.bat</code> を実行してください。</p>
+
+    <h3>困ったとき</h3>
+    <ul>
+      <li>「サーバ未応答」と出る → <code>index.html</code> を直接開いていませんか。必ず <code>run.bat</code>（お試しは <code>run_demo.bat</code>）から起動してください。</li>
+      <li>マスタ読込が失敗する → VPN接続と <code>config.ini</code> の接続情報を確認し、ページを再読込してください。</li>
+    </ul>
+  </div>
+</div>
+
+<script>
+let lastMode = null;
+let lastColumns = null;
+let lastRows = null;
+let pollTimer = null;
+const NUM_KEYS = ["usage","usage_total","usage_direct"];
+const CTR_KEYS = ["dup"];
+
+function clearParts(){ document.getElementById("parts").value = ""; }
+function getParts(){
+  return document.getElementById("parts").value
+    .split(/\r?\n/).map(s=>s.trim()).filter(s=>s);
+}
+function openManual(){ document.getElementById("manual").classList.add("show"); }
+function closeManual(){ document.getElementById("manual").classList.remove("show"); }
+document.addEventListener("keydown", e=>{ if(e.key==="Escape") closeManual(); });
+
+function setSearchEnabled(on){
+  document.getElementById("b-kishu").disabled = !on;
+  document.getElementById("b-choku").disabled = !on;
+}
+function setBusy(b, msg){
+  document.getElementById("status").innerHTML =
+    b ? ('<span class="spinner"></span>'+(msg||"処理中...")) : (msg||"");
+}
+
+// ---- マスタ読込の開始＋進捗ポーリング ----
+async function startLoad(){
+  document.getElementById("progwrap").classList.add("show");
+  try{ await fetch("/api/start_load", {method:"POST"}); }catch(e){}
+  pollProgress();
+}
+async function pollProgress(){
+  const bd = document.getElementById("badge");
+  const fill = document.getElementById("progfill");
+  const ptxt = document.getElementById("progtext");
+  try{
+    const j = await (await fetch("/api/load_progress")).json();
+    fill.style.width = (j.percent||0) + "%";
+    if(j.demo){ bd.className="badge demo"; bd.textContent="● デモモード(DB未接続)"; }
+    else { bd.className="badge load"; bd.textContent="● マスタ読込中 "+(j.percent||0)+"%"; }
+
+    if(j.state==="done" || j.loaded){
+      fill.style.width = "100%";
+      ptxt.textContent = "マスタ読込完了" + (j.summary? "（"+j.summary+"）":"");
+      bd.className = j.demo ? "badge demo" : "badge ok";
+      bd.textContent = j.demo ? "● デモモード(DB未接続)" : "● 本番(マスタ取得済)";
+      // マスタ取得日時・所要時間を表示
+      let info = "";
+      if(j.loaded_at) info = "マスタ取得: " + j.loaded_at;
+      if(j.elapsed)  info += "（" + j.elapsed + "秒）";
+      document.getElementById("loadinfo").textContent = info;
+      setSearchEnabled(true);
+      setTimeout(()=>document.getElementById("progwrap").classList.remove("show"), 1200);
+      return;
+    }
+    if(j.state==="error"){
+      ptxt.textContent = "読込エラー: " + (j.error||"");
+      bd.className="badge ng"; bd.textContent="○ マスタ読込失敗";
+      return;
+    }
+    ptxt.textContent = (j.stage||"読み込み中...") + "（"+(j.percent||0)+"%）";
+  }catch(e){
+    ptxt.textContent = "サーバ未応答（run.bat から起動してください）";
+    bd.className="badge ng"; bd.textContent="○ サーバ未応答";
+    return;
+  }
+  pollTimer = setTimeout(pollProgress, 500);
+}
+
+async function doSearch(mode){
+  const parts = getParts();
+  if(parts.length===0){ alert("検索する部品コードを入力してください（1行に1コード）。"); return; }
+  lastMode = mode;
+  setBusy(true, "検索中...（"+parts.length+"件）");
+  document.getElementById("b-xlsx").disabled = true;
+  try{
+    const r = await fetch("/api/search",{
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({mode, parts})
+    });
+    const j = await r.json();
+    if(!j.ok){ setBusy(false, j.msg||"エラー"); return; }
+    lastColumns = j.columns; lastRows = j.rows;
+    renderTable(j.columns, j.rows);
+    const label = mode==="kishu" ? "機種コード逆展開検索" : "直上親コード検索";
+    setBusy(false, label+" 完了：" + j.rows.length + "行");
+    const has = j.rows.length>0;
+    document.getElementById("b-xlsx").disabled = !has;
+  }catch(e){ setBusy(false, "通信エラー: "+e); }
+}
+
+function renderTable(columns, rows){
+  const tbl = document.getElementById("result");
+  const thead = tbl.querySelector("thead");
+  const tbody = tbl.querySelector("tbody");
+  thead.innerHTML = "<tr>" + columns.map(c=>"<th>"+esc(c.title)+"</th>").join("") + "</tr>";
+  let prev = null, html = "";
+  for(const row of rows){
+    const isNewGroup = prev===null || row.part!==prev.part;
+    const d = blankDup(row, prev, lastMode);
+    html += "<tr"+(isNewGroup?' class="group-start"':"")+">";
+    for(const c of columns){
+      let v = d[c.key]; v = (v===null||v===undefined) ? "" : v;
+      if(typeof v === "number") v = String(v);
+      const cls = NUM_KEYS.includes(c.key) ? ' class="num"'
+                : CTR_KEYS.includes(c.key) ? ' class="ctr"' : "";
+      html += "<td"+cls+">"+esc(String(v))+"</td>";
+    }
+    html += "</tr>";
+    prev = row;
+  }
+  tbody.innerHTML = html || ('<tr><td class="muted">該当する結果がありませんでした</td></tr>');
+}
+
+function blankDup(row, prev, mode){
+  const d = Object.assign({}, row);
+  if(prev && row.part===prev.part && row.part!==""){
+    d.part = ""; if("part_name" in d) d.part_name = "";
+    if(mode==="chokujou"){
+      if(row.model===prev.model && row.model!=="該当なし"){
+        d.model=""; d.usage_total=""; d.maker="";
+        if(row.parent===prev.parent && row.parent!=="" && row.parent!=="該当なし"){
+          d.parent=""; d.parent_name=""; d.usage_direct=""; d.parent_dk="";
+        }
+      }
+    } else {
+      if(row.model===prev.model) d.model="";
+    }
+  }
+  return d;
+}
+
+function esc(s){ return s.replace(/[&<>"]/g, m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[m])); }
+
+// 「名前を付けて保存」ダイアログ（Chrome/Edge）。非対応時は通常ダウンロードへ。
+async function saveBlob(blob, name, types){
+  if(window.showSaveFilePicker){
+    try{
+      const handle = await window.showSaveFilePicker({ suggestedName:name, types:types });
+      const w = await handle.createWritable();
+      await w.write(blob);
+      await w.close();
+      return "saved";
+    }catch(e){
+      if(e && e.name === "AbortError") return "cancel";  // ユーザーが取消
+      // それ以外は従来方式へフォールバック
+    }
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a"); a.href=url; a.download=name; a.click();
+  setTimeout(()=>URL.revokeObjectURL(url), 2000);
+  return "saved";
+}
+
+function csvCell(v){
+  let s = (v===null||v===undefined) ? "" : String(v);
+  return /[",\r\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s;
+}
+
+async function download(fmt){
+  if(!lastMode || !lastRows){ alert("先に検索を実行してください。"); return; }
+  const base = "逆検索結果_" + (lastMode==="kishu" ? "機種コード" : "直上親コード");
+
+  if(fmt === "csv"){
+    // CSVはブラウザ側だけで即時生成（サーバ往復なし）。Excelで開けるようBOM付きUTF-8。
+    let out = lastColumns.map(c=>csvCell(c.title)).join(",") + "\r\n";
+    for(const r of lastRows){
+      out += lastColumns.map(c=>csvCell(r[c.key])).join(",") + "\r\n";
+    }
+    const blob = new Blob(["﻿"+out], {type:"text/csv;charset=utf-8"});
+    const res = await saveBlob(blob, base + ".csv",
+      [{description:"CSV (Excel対応)", accept:{"text/csv":[".csv"]}}]);
+    setBusy(false, res==="cancel" ? "保存をキャンセルしました。" : "CSVを保存しました。");
+    return;
+  }
+
+  // Excel(.xlsx) はサーバで生成（表示中の結果をそのまま送るので再検索しない＝高速）
+  setBusy(true, "Excelを作成中...");
+  try{
+    const r = await fetch("/api/download",{
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({mode:lastMode, format:"xlsx", columns:lastColumns, rows:lastRows})
+    });
+    if(!r.ok){ const j=await r.json().catch(()=>({})); setBusy(false, j.msg||"保存エラー"); return; }
+    const blob = await r.blob();
+    const res = await saveBlob(blob, base + ".xlsx",
+      [{description:"Excel ブック", accept:{"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":[".xlsx"]}}]);
+    setBusy(false, res==="cancel" ? "保存をキャンセルしました。" : "Excelを保存しました。");
+  }catch(e){ setBusy(false, "通信エラー: "+e); }
+}
+
+startLoad();
+</script>
+</body>
+</html>

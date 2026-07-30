@@ -1,0 +1,10 @@
+# 本番(DB接続)で必要
+pymssql>=2.2
+# pymssqlが入らない環境では代わりに pyodbc を使います:
+# pyodbc>=4.0
+
+# Excel(.xlsx)保存に使用（無い場合はCSV保存にフォールバック）
+openpyxl>=3.0
+
+# exe化する場合のみ
+# pyinstaller>=5.0
