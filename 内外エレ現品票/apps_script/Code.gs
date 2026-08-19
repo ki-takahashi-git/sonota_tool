@@ -36,6 +36,8 @@ var SOURCE_SHEET_GID = 332550892;
 // 現品票に印字される注番はC列「NEI注番号」（例: JJFK25008650）であり、B列の「注番」ではない点に注意
 var SOURCE_COL_ORDER_NO = 3;      // C列: NEI注番号
 var SOURCE_COL_MODEL = 4;         // D列: 型式
+var SOURCE_COL_SHIYAKU = 6;       // F列: 部材支給（日付）
+var SOURCE_COL_NOUKI = 7;         // G列: 製造納期（日付）
 var SOURCE_COL_MANAGEMENT_NO = 12; // L列: 管理No.（現品票の連番はここから取得する。自動採番はしない）
 
 // このスプレッドシート内のシート名
@@ -50,6 +52,10 @@ var DUPLICATE_ERROR_LABEL = 'エラー:重複';
 // 計算してあり、これによって自然に14行(2ブロック)ごとに改ページされる。
 // ※「拡大縮小: 幅に合わせる/ページ数に合わせる」を選ぶとこの計算が崩れるので使わないこと。
 var OUTPUT_SHEET_NAME = '印刷';
+// 印刷シートの行の高さを「前回どこまで設定済みか」記録するためのドキュメントプロパティキー
+// （buildOutputSheet_の高速化用。値そのものはBLOCK_ROW_HEIGHTS参照）
+var OUTPUT_ROWS_HEIGHT_KEY_PROP = 'outputRowsHeightKey';
+var OUTPUT_ROWS_HEIGHT_COUNT_PROP = 'outputRowsHeightCount';
 
 // 現品票レイアウト設定
 // 元のExcelブック(内外エレクトロニクス_入庫処理_2026.xlsm)のスタイル定義を直接調べて割り出した実際の値。
@@ -79,12 +85,16 @@ var QR_DISPLAY_SIZE_PX = 110;
 // （列幅いっぱいの右端ではなく、数字にもっと近づけたい場合はこの値を小さくする）
 // QRと連番をまとめて1cm(約38px)右にずらすためQR_OFFSET_X_PXに38pxを加算してある。
 var QR_OFFSET_X_PX = 260 + 38;
-// QRを連番の行の縦方向中央に合わせる（行の高さからQRの高さを引いた分の半分だけ上から空ける）
-var QR_OFFSET_Y_PX = Math.round((BLOCK_ROW_HEIGHTS[1] - QR_DISPLAY_SIZE_PX) / 2);
+// QRを連番の行の縦方向中央に合わせつつ、さらに5mm(約19px)下にずらす
+var QR_OFFSET_Y_PX = Math.round((BLOCK_ROW_HEIGHTS[1] - QR_DISPLAY_SIZE_PX) / 2) + 19;
 var MONTH_FONT_SIZE = 16;    // 年月のフォントサイズ（Excel実物は太字）
+var HEADER_DETAIL_FONT_SIZE = 13; // ヘッダーの「部材支給・製造納期」部分のフォントサイズ（年月より小さくして幅に収める）
 var SERIAL_FONT_SIZE = 130;  // 連番のフォントサイズ
 var MODEL_FONT_SIZE = 14;    // 型式のフォントサイズ
 var ORDER_NO_FONT_SIZE = 44; // 注番のフォントサイズ
+// 注番の右に付ける丸囲み文字（左半分＝丸囲みア、右半分＝丸囲みフ）。フォントサイズは注番と同じ。
+var ORDER_NO_LEFT_MARK = '㋐';  // 丸囲みア (U+32D0)
+var ORDER_NO_RIGHT_MARK = '㋫'; // 丸囲みフ (U+32EB)
 // 連番の文字列の前に付ける余白。セルの値である連番自体には「Xpx右にずらす」という
 // 精密な指定ができるAPIが無いため、リッチテキストで先頭の空白だけ別の(小さい)フォントサイズに
 // して、その空白の見た目の横幅で右にずらす。
@@ -279,7 +289,9 @@ function printSelectedTags() {
   }
 
   var orderNumbers = ready.map(function (e) { return e.orderNo; });
+  var tLookup0 = new Date().getTime();
   var lookup = lookupOrdersFromSource_(orderNumbers);
+  Logger.log('生産計画シートからの取得(lookupOrdersFromSource_): ' + (new Date().getTime() - tLookup0) + 'ms');
 
   var records = [];
   var notFound = [];
@@ -298,7 +310,9 @@ function printSelectedTags() {
         serial: serials[u],
         model: info.model,
         month: monthLabel,
-        orderNo: displayOrderNo
+        orderNo: displayOrderNo,
+        shiyaku: info.shiyaku,
+        nouki: info.nouki
       });
     }
   }
@@ -451,18 +465,21 @@ function lookupOrdersFromSource_(orderNumbers) {
   if (!sheet) throw new Error('コピー元シート(gid=' + SOURCE_SHEET_GID + ')が見つかりません。');
 
   var lastRow = sheet.getLastRow();
-  // 注番号・型式・管理No.の列をまとめて1回で読み込む
-  var firstCol = Math.min(SOURCE_COL_ORDER_NO, SOURCE_COL_MODEL, SOURCE_COL_MANAGEMENT_NO);
-  var lastCol = Math.max(SOURCE_COL_ORDER_NO, SOURCE_COL_MODEL, SOURCE_COL_MANAGEMENT_NO);
+  // 注番号・型式・部材支給・製造納期・管理No.の列をまとめて1回で読み込む
+  var firstCol = Math.min(SOURCE_COL_ORDER_NO, SOURCE_COL_MODEL, SOURCE_COL_SHIYAKU, SOURCE_COL_NOUKI, SOURCE_COL_MANAGEMENT_NO);
+  var lastCol = Math.max(SOURCE_COL_ORDER_NO, SOURCE_COL_MODEL, SOURCE_COL_SHIYAKU, SOURCE_COL_NOUKI, SOURCE_COL_MANAGEMENT_NO);
   var block = sheet.getRange(1, firstCol, lastRow, lastCol - firstCol + 1).getValues();
   var orderOffset = SOURCE_COL_ORDER_NO - firstCol;
   var modelOffset = SOURCE_COL_MODEL - firstCol;
+  var shiyakuOffset = SOURCE_COL_SHIYAKU - firstCol;
+  var nokiOffset = SOURCE_COL_NOUKI - firstCol;
   var mgmtOffset = SOURCE_COL_MANAGEMENT_NO - firstCol;
 
   // 生産計画側は、数量が2以上の場合、同じNEI注文番号の行を数量分だけ複数行に分けて登録し、
   // それぞれの行のL列(管理No.)に別々の番号を振る運用になっている。
   // そのため、現品票の連番は自動採番せず、同じNEI注文番号に対応する行すべてのL列の値を
   // 出現順にそのまま集めて使う（件数=行数がそのまま数量になる）。
+  // 部材支給・製造納期は行によらず同じ値のはずなので、最初に見つかった行の値だけを使う。
   var result = {};
   for (var r = 0; r < lastRow; r++) {
     var orderVal = String(block[r][orderOffset]).trim();
@@ -470,6 +487,8 @@ function lookupOrdersFromSource_(orderNumbers) {
       if (result[orderVal] === undefined) {
         result[orderVal] = {
           model: String(block[r][modelOffset]).trim(),
+          shiyaku: formatDateValue_(block[r][shiyakuOffset]),
+          nouki: formatDateValue_(block[r][nokiOffset]),
           managementNumbers: []
         };
       }
@@ -482,9 +501,31 @@ function lookupOrdersFromSource_(orderNumbers) {
   return result;
 }
 
+// 生産計画シートのF列・G列の値を表示用の日付文字列（例: "26/07/13"）に整形する。
+// 日付として入力されていればそのフォーマットで、そうでなければ元の文字列をそのまま使う。
+function formatDateValue_(v) {
+  if (Object.prototype.toString.call(v) === '[object Date]' && !isNaN(v)) {
+    var tz = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone();
+    return Utilities.formatDate(v, tz, 'yy/MM/dd');
+  }
+  return String(v).trim();
+}
+
 /*==================== 出力シート構築 ====================*/
 
 function buildOutputSheet_(records) {
+  // ---- 計測用: どの処理が時間を占めているか調べるための一時的なログ ----
+  // 実行後、Apps Scriptエディタの左側「実行数」アイコンから今回の実行を開き、
+  // 「ログ」タブでここに出力した経過時間(ミリ秒)を確認できる。
+  var t0 = new Date().getTime();
+  var lap = function (label) {
+    var now = new Date().getTime();
+    Logger.log(label + ': ' + (now - t0) + 'ms (経過合計)');
+    t0 = now;
+  };
+  QR_INSERT_CALL_MS_ = 0;
+  QR_RESIZE_CALL_MS_ = 0;
+
   var ss = SpreadsheetApp.getActiveSpreadsheet();
 
   // 以前のバージョンで作られた「印刷_1」「印刷_2」...のページ分割シートが残っていれば削除する
@@ -502,9 +543,11 @@ function buildOutputSheet_(records) {
     // 同じシートの中身（値・書式・画像）だけをクリアして使い回す。
     sheet.clear();
     var oldImages = sheet.getImages();
+    lap('シートクリア(clear()+getImages()) 完了、削除対象の画像 ' + oldImages.length + ' 枚');
     for (var oi = 0; oi < oldImages.length; oi++) {
       oldImages[oi].remove();
     }
+    lap('古い画像の削除(' + oldImages.length + '枚)');
   } else {
     sheet = ss.insertSheet(OUTPUT_SHEET_NAME);
   }
@@ -526,40 +569,52 @@ function buildOutputSheet_(records) {
   var totalRows = n * rowsPerBlock;
 
   // --- 行の高さを設定 ---
-  // (setRowHeightは1行ずつしか指定できないAPIのため、ここは件数に比例して呼び出すが、
-  //  画像転送を伴わない軽い呼び出しなので値・書式のまとめ書きほどのボトルネックにはならない)
+  // setRowHeightは1行ずつしか指定できないAPIで、以前は毎回全行に対して呼び出していたため
+  // 件数が多いと時間がかかっていた。行の高さのパターンは常にBLOCK_ROW_HEIGHTSで固定なので、
+  // 前回の実行で既に正しい高さを設定済みの行は再設定せず、増えた分の行だけ設定する
+  // （BLOCK_ROW_HEIGHTSの値自体を変更した場合は、キー不一致になり自動的に全行再設定される）。
+  var docProps = PropertiesService.getDocumentProperties();
+  var blockHeightsKey = BLOCK_ROW_HEIGHTS.join(',');
+  var alreadySizedRows = 0;
+  if (docProps.getProperty(OUTPUT_ROWS_HEIGHT_KEY_PROP) === blockHeightsKey) {
+    alreadySizedRows = Number(docProps.getProperty(OUTPUT_ROWS_HEIGHT_COUNT_PROP)) || 0;
+  }
   for (var i = 0; i < n; i++) {
     var base = i * rowsPerBlock;
     for (var k = 0; k < rowsPerBlock; k++) {
-      sheet.setRowHeight(base + k + 1, BLOCK_ROW_HEIGHTS[k]);
+      var rowNum = base + k + 1;
+      if (rowNum <= alreadySizedRows) continue;
+      sheet.setRowHeight(rowNum, BLOCK_ROW_HEIGHTS[k]);
     }
   }
+  if (totalRows > alreadySizedRows) {
+    docProps.setProperty(OUTPUT_ROWS_HEIGHT_KEY_PROP, blockHeightsKey);
+    docProps.setProperty(OUTPUT_ROWS_HEIGHT_COUNT_PROP, String(totalRows));
+  }
+  lap('行の高さ設定(新規に設定した行数: ' + Math.max(totalRows - alreadySizedRows, 0) + ')');
 
-  // --- セルの値・書式は配列にまとめて一括反映（1件ずつ個別にsetValue()等を呼ばない） ---
+  // --- セルの書式・値(リッチテキスト)は配列にまとめて一括反映 ---
+  // （以前は連番・ヘッダーのリッチテキストを1件ずつ個別のAPI呼び出しで設定していたため、
+  //  件数が多いと時間がかかっていた。全セル分のRichTextValueを配列にまとめておき、
+  //  最後にsetRichTextValues()を1回呼ぶだけで全件反映する）
   // 列は LEFT_COL(B) 〜 RIGHT_COL(D) の3列分（間のギャップ列Cも含む）をまとめて1回のRangeで扱う
   var numCols = RIGHT_COL - LEFT_COL + 1;
   var leftIdx = 0;
   var rightIdx = RIGHT_COL - LEFT_COL;
 
-  var values = [];
-  var fontSizes = [];
-  var fontWeights = [];
   var hAligns = [];
   var vAligns = [];
   var numberFormats = [];
+  var richTexts = [];
+  var blankRichText = SpreadsheetApp.newRichTextValue().setText('').build();
   for (var r = 0; r < totalRows; r++) {
-    values.push(new Array(numCols).fill(''));
-    fontSizes.push(new Array(numCols).fill(10));
-    fontWeights.push(new Array(numCols).fill('normal'));
     hAligns.push(new Array(numCols).fill('general'));
     vAligns.push(new Array(numCols).fill('bottom'));
     numberFormats.push(new Array(numCols).fill('General'));
+    richTexts.push(new Array(numCols).fill(blankRichText));
   }
 
-  var setCell = function (rowIdx, colIdx, value, fontSize, fontWeight, hAlign, vAlign, numberFormat) {
-    values[rowIdx][colIdx] = value;
-    fontSizes[rowIdx][colIdx] = fontSize;
-    fontWeights[rowIdx][colIdx] = fontWeight;
+  var setCellFormat = function (rowIdx, colIdx, hAlign, vAlign, numberFormat) {
     hAligns[rowIdx][colIdx] = hAlign;
     vAligns[rowIdx][colIdx] = vAlign;
     numberFormats[rowIdx][colIdx] = numberFormat;
@@ -569,78 +624,97 @@ function buildOutputSheet_(records) {
     var record = records[i2];
     var base2 = i2 * rowsPerBlock;
 
-    // 行の並び: 0=年月, 1=連番(+QR), 2=空白, 3=型式, 4=空白, 5=注番, 6=空白
-    // 年月("2026-07")・連番("001")とも、数値や日付に自動変換されないよう文字列指定('@')にする
-    setCell(base2 + 0, leftIdx, record.month, MONTH_FONT_SIZE, 'bold', 'left', 'bottom', '@');
-    setCell(base2 + 0, rightIdx, record.month, MONTH_FONT_SIZE, 'bold', 'left', 'bottom', '@');
+    // 行の並び: 0=年月+日付情報, 1=連番(+QR), 2=空白, 3=型式, 4=空白, 5=注番, 6=空白
+    // 配置(揃え)・数値書式と、表示するリッチテキストをここでまとめてセットしておく。
+    setCellFormat(base2 + 0, leftIdx, 'left', 'middle', '@');
+    setCellFormat(base2 + 0, rightIdx, 'left', 'middle', '@');
+    richTexts[base2 + 0][leftIdx] = buildHeaderRichText_(record);
+    richTexts[base2 + 0][rightIdx] = buildHeaderRichText_(record);
 
-    // 連番の値・文字サイズはここでは設定しない（後でリッチテキストとして個別に設定するため）。
-    // 配置(揃え)・数値書式だけここで反映しておく。
-    setCell(base2 + 1, leftIdx, '', SERIAL_FONT_SIZE, 'normal', 'general', 'bottom', '@');
-    setCell(base2 + 1, rightIdx, '', SERIAL_FONT_SIZE, 'normal', 'general', 'bottom', '@');
+    setCellFormat(base2 + 1, leftIdx, 'general', 'bottom', '@');
+    setCellFormat(base2 + 1, rightIdx, 'general', 'bottom', '@');
+    richTexts[base2 + 1][leftIdx] = buildSerialRichText_(record.serial);
+    richTexts[base2 + 1][rightIdx] = buildSerialRichText_(record.serial);
 
-    setCell(base2 + 3, leftIdx, record.model, MODEL_FONT_SIZE, 'normal', 'general', 'bottom', 'General');
-    setCell(base2 + 3, rightIdx, record.model, MODEL_FONT_SIZE, 'normal', 'general', 'bottom', 'General');
+    setCellFormat(base2 + 3, leftIdx, 'general', 'bottom', 'General');
+    setCellFormat(base2 + 3, rightIdx, 'general', 'bottom', 'General');
+    richTexts[base2 + 3][leftIdx] = buildPlainRichText_(record.model, MODEL_FONT_SIZE);
+    richTexts[base2 + 3][rightIdx] = buildPlainRichText_(record.model, MODEL_FONT_SIZE);
 
-    setCell(base2 + 5, leftIdx, record.orderNo, ORDER_NO_FONT_SIZE, 'normal', 'general', 'middle', 'General');
-    setCell(base2 + 5, rightIdx, record.orderNo, ORDER_NO_FONT_SIZE, 'normal', 'general', 'middle', 'General');
+    setCellFormat(base2 + 5, leftIdx, 'general', 'middle', 'General');
+    setCellFormat(base2 + 5, rightIdx, 'general', 'middle', 'General');
+    // 注番の右に、左半分は丸囲みの「ア」、右半分は丸囲みの「フ」を付ける（同じフォントサイズ）
+    richTexts[base2 + 5][leftIdx] = buildPlainRichText_(record.orderNo + ' ' + ORDER_NO_LEFT_MARK, ORDER_NO_FONT_SIZE);
+    richTexts[base2 + 5][rightIdx] = buildPlainRichText_(record.orderNo + ' ' + ORDER_NO_RIGHT_MARK, ORDER_NO_FONT_SIZE);
   }
 
   var range = sheet.getRange(1, LEFT_COL, totalRows, numCols);
-  // 先に書式（特に文字列指定'@'）を反映してから値を書き込む。
+  // 先に書式（特に文字列指定'@'）を反映してから値(リッチテキスト)を書き込む。
   // 逆順にすると、"001"や"2026-07"のような数字・日付に見える文字列が
   // 書き込み時点で数値や日付に自動変換されてしまい、後から'@'にしても元に戻らない。
-  range.setFontSizes(fontSizes);
-  range.setFontWeights(fontWeights);
   range.setHorizontalAlignments(hAligns);
   range.setVerticalAlignments(vAligns);
   range.setNumberFormats(numberFormats);
   range.setWrap(false);
-  range.setFontFamily('MS Gothic');
-  range.setFontColor('#000000');
-  range.setValues(values);
-
-  // --- 連番のセルにリッチテキストを設定（先頭の空白だけ小さいフォントにして約1cm右にずらす） ---
-  for (var i4 = 0; i4 < n; i4++) {
-    var record4 = records[i4];
-    var serialRow4 = i4 * rowsPerBlock + 2; // ブロック内0-indexで1番目(連番行)。シート行は1始まりなので+2
-    setSerialRichText_(sheet, serialRow4, LEFT_COL, record4.serial);
-    setSerialRichText_(sheet, serialRow4, RIGHT_COL, record4.serial);
-  }
+  range.setRichTextValues(richTexts);
+  lap('セル書式・リッチテキストの一括反映');
 
   // --- QRコード画像を挿入 ---
   // 左右で同じ内容のため、QR画像の生成は1件につき1回だけ行い、挿入だけ2回行う
   // （画像挿入自体はSheets APIの仕様上1枚ずつしか呼び出せないため、ここは件数に比例する）
   // QRは列の右端ではなく、連番の数字にもっと近いQR_OFFSET_X_PXの位置に置く
   var offsetX = Math.max(QR_OFFSET_X_PX, 0);
+  var qrGenMs = 0;
+  var qrInsertMs = 0;
   for (var i3 = 0; i3 < n; i3++) {
     var record3 = records[i3];
     var startRow3 = i3 * rowsPerBlock + 1;
     var qrText = record3.serial + '\n' + record3.model + '\n' + record3.month + '\n' + record3.orderNo;
-    var blob = generateQrPngBlob(qrText, QR_MODULE_PX);
 
+    var tg0 = new Date().getTime();
+    var blob = generateQrPngBlob(qrText, QR_MODULE_PX);
+    qrGenMs += new Date().getTime() - tg0;
+
+    var ti0 = new Date().getTime();
     insertQrImage_(sheet, startRow3, LEFT_COL, blob, offsetX);
     insertQrImage_(sheet, startRow3, RIGHT_COL, blob, offsetX);
+    qrInsertMs += new Date().getTime() - ti0;
   }
+  Logger.log('QR画像生成(PNG作成)の合計: ' + qrGenMs + 'ms (' + n + '件、1件あたり約' + Math.round(qrGenMs / n) + 'ms)');
+  Logger.log('QR画像挿入(insertImage)の合計: ' + qrInsertMs + 'ms (' + (n * 2) + '枚、1枚あたり約' + Math.round(qrInsertMs / (n * 2)) + 'ms)');
+  Logger.log('  内訳: insertImage()本体 ' + QR_INSERT_CALL_MS_ + 'ms (1枚あたり約' + Math.round(QR_INSERT_CALL_MS_ / (n * 2)) + 'ms) / '
+    + 'setWidth+setHeight ' + QR_RESIZE_CALL_MS_ + 'ms (1枚あたり約' + Math.round(QR_RESIZE_CALL_MS_ / (n * 2)) + 'ms)');
+  lap('QRコード生成・挿入 全体');
 
   // 印刷設定: A4横向き、余白なし
   // (Apps Script には Excel のような細かい PageSetup API がないため、
   //  実際の印刷は [ファイル > 印刷] のダイアログで「用紙: A4」「向き: 横」
   //  「余白: なし」を選んで行う)
   sheet.setFrozenRows(0);
+  Logger.log('=== buildOutputSheet_ 全体完了 (件数: ' + n + ') ===');
 }
+
+// 計測用: insertImage本体 / setWidth+setHeight のどちらが重いかを分けて集計するための変数
+var QR_INSERT_CALL_MS_ = 0;
+var QR_RESIZE_CALL_MS_ = 0;
 
 function insertQrImage_(sheet, startRow, col, blob, offsetX) {
   // QRを連番の行の縦方向中央に来るようQR_OFFSET_Y_PXだけ下げて配置する
+  var t1 = new Date().getTime();
   var image = sheet.insertImage(blob, col, startRow + 1, offsetX, QR_OFFSET_Y_PX);
+  var t2 = new Date().getTime();
   image.setWidth(QR_DISPLAY_SIZE_PX);
   image.setHeight(QR_DISPLAY_SIZE_PX);
+  var t3 = new Date().getTime();
+  QR_INSERT_CALL_MS_ += (t2 - t1);
+  QR_RESIZE_CALL_MS_ += (t3 - t2);
 }
 
-// 連番セルに、先頭のSERIAL_LEFT_PADだけSERIAL_LEFT_PAD_FONT_SIZE(小さめ)、
-// 本体の連番はSERIAL_FONT_SIZEで表示するリッチテキストを設定する。
+// 連番セル用に、先頭のSERIAL_LEFT_PADだけSERIAL_LEFT_PAD_FONT_SIZE(小さめ)、
+// 本体の連番はSERIAL_FONT_SIZEで表示するRichTextValueを組み立てて返す。
 // これにより、空白の見た目の横幅を使って連番を約1cm右にずらす。
-function setSerialRichText_(sheet, row, col, serial) {
+// （セルへの書き込みはbuildOutputSheet_側でまとめて1回のsetRichTextValues()で行う）
+function buildSerialRichText_(serial) {
   var text = SERIAL_LEFT_PAD + serial;
   var padLen = SERIAL_LEFT_PAD.length;
   var padStyle = SpreadsheetApp.newTextStyle()
@@ -653,12 +727,59 @@ function setSerialRichText_(sheet, row, col, serial) {
     .setFontFamily('MS Gothic')
     .setForegroundColor('#000000')
     .build();
-  var richValue = SpreadsheetApp.newRichTextValue()
+  return SpreadsheetApp.newRichTextValue()
     .setText(text)
     .setTextStyle(0, padLen, padStyle)
     .setTextStyle(padLen, text.length, serialStyle)
     .build();
-  sheet.getRange(row, col).setRichTextValue(richValue);
+}
+
+// ヘッダー用に、年月部分はMONTH_FONT_SIZE、部材支給・製造納期部分は
+// HEADER_DETAIL_FONT_SIZE(小さめ)で表示するRichTextValueを組み立てて返す。
+// 例: "2026-07　部材支給：26/07/13　製造納期：26/08/03"
+// （セルへの書き込みはbuildOutputSheet_側でまとめて1回のsetRichTextValues()で行う）
+function buildHeaderRichText_(record) {
+  var monthText = record.month;
+  var detailText = '';
+  if (record.shiyaku) detailText += '　部材支給：' + record.shiyaku;
+  if (record.nouki) detailText += '　製造納期：' + record.nouki;
+  var text = monthText + detailText;
+
+  var monthStyle = SpreadsheetApp.newTextStyle()
+    .setFontSize(MONTH_FONT_SIZE)
+    .setBold(true)
+    .setFontFamily('MS Gothic')
+    .setForegroundColor('#000000')
+    .build();
+
+  var builder = SpreadsheetApp.newRichTextValue().setText(text)
+    .setTextStyle(0, monthText.length, monthStyle);
+
+  if (detailText.length > 0) {
+    var detailStyle = SpreadsheetApp.newTextStyle()
+      .setFontSize(HEADER_DETAIL_FONT_SIZE)
+      .setBold(true)
+      .setFontFamily('MS Gothic')
+      .setForegroundColor('#000000')
+      .build();
+    builder = builder.setTextStyle(monthText.length, text.length, detailStyle);
+  }
+
+  return builder.build();
+}
+
+// 型式・注番など、単一フォントサイズで表示するだけのセル用にRichTextValueを組み立てて返す。
+function buildPlainRichText_(text, fontSize) {
+  if (!text) return SpreadsheetApp.newRichTextValue().setText('').build();
+  var style = SpreadsheetApp.newTextStyle()
+    .setFontSize(fontSize)
+    .setFontFamily('MS Gothic')
+    .setForegroundColor('#000000')
+    .build();
+  return SpreadsheetApp.newRichTextValue()
+    .setText(text)
+    .setTextStyle(0, text.length, style)
+    .build();
 }
 
 /*==================== QRコード → PNG画像 生成（外部通信なし） ====================*/
