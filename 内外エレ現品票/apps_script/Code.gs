@@ -91,7 +91,7 @@ var MONTH_FONT_SIZE = 16;    // 年月のフォントサイズ（Excel実物は�
 var HEADER_DETAIL_FONT_SIZE = 13; // ヘッダーの「部材支給・製造納期」部分のフォントサイズ（年月より小さくして幅に収める）
 var SERIAL_FONT_SIZE = 130;  // 連番のフォントサイズ
 var MODEL_FONT_SIZE = 14;    // 型式のフォントサイズ
-var ORDER_NO_FONT_SIZE = 44; // 注番のフォントサイズ
+var ORDER_NO_FONT_SIZE = 38; // 注番のフォントサイズ（丸囲み文字を追加した分、44だとはみ出す場合があるため縮小）
 // 注番の右に付ける丸囲み文字（左半分＝丸囲みア、右半分＝丸囲みフ）。フォントサイズは注番と同じ。
 var ORDER_NO_LEFT_MARK = '㋐';  // 丸囲みア (U+32D0)
 var ORDER_NO_RIGHT_MARK = '㋫'; // 丸囲みフ (U+32EB)
@@ -560,6 +560,18 @@ function buildOutputSheet_(records) {
   sheet.setColumnWidth(RIGHT_COL, TEXT_COL_WIDTH_PX);
   sheet.setColumnWidth(RIGHT_COL + 1, E_COL_WIDTH_PX);
 
+  // E列より右（F列以降）に、古いバージョンの名残などで余分な列が残っていると、
+  // 印刷の「使用範囲」の横幅が実際の見た目より広いと判定され、
+  // 標準(100%)スケールで横に収まりきらず「内容ありページ」と「空白ページ」に
+  // 分割されてしまう（偶数ページが全部空白になる不具合の原因）。
+  // そのため、E列より右の列は毎回すべて削除しておく。
+  var lastUsedCol = RIGHT_COL + 1; // = E列
+  var currentMaxCols = sheet.getMaxColumns();
+  if (currentMaxCols > lastUsedCol) {
+    sheet.deleteColumns(lastUsedCol + 1, currentMaxCols - lastUsedCol);
+  }
+  Logger.log('列数調整(' + currentMaxCols + '列 → ' + Math.min(currentMaxCols, lastUsedCol) + '列)');
+
   var rowsPerBlock = BLOCK_ROW_HEIGHTS.length;
   var n = records.length;
   if (n === 0) {
@@ -567,6 +579,20 @@ function buildOutputSheet_(records) {
     return;
   }
   var totalRows = n * rowsPerBlock;
+
+  // --- シートの行数を今回の件数ちょうどに揃える ---
+  // 改ページはExcelのような明示的なページ区切りAPIが無く、行の高さの合計が
+  // ちょうどA4横1ページ分(700px=2ブロック)になることで自然に発生する仕組みのため、
+  // 以前の（件数が多かった）実行で使われた余分な行がシートに残ったままだと、
+  // その余分な行がそのまま空白ページとして印刷されてしまう。
+  // そのため、前回より件数が減った場合は余分な行を削除し、増えた場合は行を追加する。
+  var currentMaxRows = sheet.getMaxRows();
+  if (currentMaxRows > totalRows) {
+    sheet.deleteRows(totalRows + 1, currentMaxRows - totalRows);
+  } else if (currentMaxRows < totalRows) {
+    sheet.insertRowsAfter(currentMaxRows, totalRows - currentMaxRows);
+  }
+  lap('シートの行数調整(' + currentMaxRows + '行 → ' + totalRows + '行)');
 
   // --- 行の高さを設定 ---
   // setRowHeightは1行ずつしか指定できないAPIで、以前は毎回全行に対して呼び出していたため
@@ -578,6 +604,11 @@ function buildOutputSheet_(records) {
   var alreadySizedRows = 0;
   if (docProps.getProperty(OUTPUT_ROWS_HEIGHT_KEY_PROP) === blockHeightsKey) {
     alreadySizedRows = Number(docProps.getProperty(OUTPUT_ROWS_HEIGHT_COUNT_PROP)) || 0;
+  }
+  // 上で余分な行を削除した場合、そのぶんキャッシュ済みとみなす行数も実際に合わせて減らす
+  // （削除された行はもう高さが設定された状態ではないため）。
+  if (alreadySizedRows > totalRows) {
+    alreadySizedRows = totalRows;
   }
   for (var i = 0; i < n; i++) {
     var base = i * rowsPerBlock;
@@ -644,8 +675,8 @@ function buildOutputSheet_(records) {
     setCellFormat(base2 + 5, leftIdx, 'general', 'middle', 'General');
     setCellFormat(base2 + 5, rightIdx, 'general', 'middle', 'General');
     // 注番の右に、左半分は丸囲みの「ア」、右半分は丸囲みの「フ」を付ける（同じフォントサイズ）
-    richTexts[base2 + 5][leftIdx] = buildPlainRichText_(record.orderNo + ' ' + ORDER_NO_LEFT_MARK, ORDER_NO_FONT_SIZE);
-    richTexts[base2 + 5][rightIdx] = buildPlainRichText_(record.orderNo + ' ' + ORDER_NO_RIGHT_MARK, ORDER_NO_FONT_SIZE);
+    richTexts[base2 + 5][leftIdx] = buildPlainRichText_(record.orderNo + ORDER_NO_LEFT_MARK, ORDER_NO_FONT_SIZE);
+    richTexts[base2 + 5][rightIdx] = buildPlainRichText_(record.orderNo + ORDER_NO_RIGHT_MARK, ORDER_NO_FONT_SIZE);
   }
 
   var range = sheet.getRange(1, LEFT_COL, totalRows, numCols);
