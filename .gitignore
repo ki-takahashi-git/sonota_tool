@@ -18,6 +18,11 @@
 製品構成逆検索/逆検索アプリ_streamlit/dbsource.py
 製品構成逆検索/逆検索アプリ_streamlit/README.md
 
+# 内外エレ日程表作成: 得意先から配布される実データ・作業用一時ファイルは対象外
+内外エレ日程表作成/*.xlsx
+内外エレ日程表作成/~$*.xlsx
+内外エレ日程表作成/*.txt
+
 # Python生成物
 __pycache__/
 *.pyc
