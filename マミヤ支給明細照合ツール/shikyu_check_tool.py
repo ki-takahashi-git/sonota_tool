@@ -43,6 +43,36 @@ try:
 except ImportError:
     winocr = None
 
+import json
+import os
+
+
+# ---------------------------------------------------------------------------
+# 設定の保存(前回選択したフォルダを記憶する)
+# ---------------------------------------------------------------------------
+
+def _config_path():
+    base = os.environ.get('APPDATA') or str(Path.home())
+    d = Path(base) / '支給明細照合ツール'
+    d.mkdir(parents=True, exist_ok=True)
+    return d / 'config.json'
+
+
+def load_config():
+    try:
+        with open(_config_path(), 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_config(cfg):
+    try:
+        with open(_config_path(), 'w', encoding='utf-8') as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+
 
 # ---------------------------------------------------------------------------
 # 共通ユーティリティ
@@ -380,6 +410,16 @@ class MatchResult:
             return None
         return self.pdf_qty - self.excel_qty
 
+    @property
+    def pdf_rowno(self):
+        """PDF(移動伝票)側の行番号。該当行が無ければ空文字、複数行が
+        1つのExcel行に対応する場合(例: 同一品番が2行に分かれて記載)は
+        カンマ区切りで併記する。原本PDFで該当箇所をすぐ探せるようにするため。
+        """
+        if not self.pdf_rows:
+            return ''
+        return ', '.join(str(p.rowno) for p in sorted(self.pdf_rows, key=lambda p: p.rowno))
+
 
 FUZZY_THRESHOLD = 0.72
 
@@ -464,9 +504,53 @@ def compare(excel_rows, pdf_rows):
     return results
 
 
+STATUS_ORDER = {'数量相違': 0, '要確認(OCR)': 1, 'PDFに見つかりません': 2,
+                'Excelに見つかりません': 3, '一致': 4}
+
+
+def _sort_key(res):
+    """確認が必要な状態を上に、それ以外(グループ内)は行番号順に並べるキー。"""
+    group = STATUS_ORDER.get(res.status, 9)
+    if res.pdf_rows:
+        rowno = min(p.rowno for p in res.pdf_rows)
+    elif res.excel_row is not None:
+        rowno = res.excel_row.row_idx
+    else:
+        rowno = 0
+    return (group, rowno)
+
+
+def sort_results(results):
+    return sorted(results, key=_sort_key)
+
+
 # ---------------------------------------------------------------------------
 # Excel レポート出力
 # ---------------------------------------------------------------------------
+
+import unicodedata
+
+NOTE_COL_WIDTH = 60  # 備考列の幅(Excel列幅単位)
+
+
+def _display_width(s):
+    """全角文字を2、半角文字を1として数えた表示幅。"""
+    if not s:
+        return 0
+    return sum(2 if unicodedata.east_asian_width(ch) in ('F', 'W', 'A') else 1 for ch in str(s))
+
+
+def _estimate_row_height(text, col_width, base_height=15, chars_per_line_margin=2):
+    """折り返し後の行数を概算し、備考(全文表示)が見切れないよう行の高さを見積もる。"""
+    if not text:
+        return base_height
+    usable = max(1, col_width - chars_per_line_margin)
+    total_lines = 0
+    for line in str(text).split('\n'):
+        width = _display_width(line)
+        total_lines += max(1, -(-width // usable))  # 切り上げ除算
+    return max(base_height, base_height * total_lines)
+
 
 FILL_OK = PatternFill('solid', fgColor='C6EFCE')
 FILL_NG = PatternFill('solid', fgColor='FFC7CE')
@@ -492,17 +576,16 @@ def write_report(results, out_path, pdf_name, sheet_name):
     ws['A2'] = f'PDF: {pdf_name}'
     ws['A3'] = f'Excelシート: {sheet_name}'
 
-    headers = ['状態', 'Excel品番', 'PDF品番(OCR)', 'Excel品名', 'PDF品名(OCR参考)',
+    headers = ['PDF行番号', '状態', 'Excel品番', 'PDF品番(OCR)', 'Excel品名', 'PDF品名(OCR参考)',
                'Excel支給数', 'PDF移動数(OCR)', '差異', '備考']
+    note_col = len(headers)
     header_row = 5
     for c, h in enumerate(headers, start=1):
         cell = ws.cell(row=header_row, column=c, value=h)
         cell.font = Font(bold=True)
         cell.alignment = Alignment(horizontal='center')
 
-    order = {'数量相違': 0, '要確認(OCR)': 1, 'PDFに見つかりません': 2,
-             'Excelに見つかりません': 3, '一致': 4}
-    results_sorted = sorted(results, key=lambda r: order.get(r.status, 9))
+    results_sorted = sort_results(results)
 
     r = header_row + 1
     counts = {}
@@ -510,7 +593,7 @@ def write_report(results, out_path, pdf_name, sheet_name):
         counts[res.status] = counts.get(res.status, 0) + 1
         diff = res.diff
         values = [
-            res.status, res.excel_code, res.pdf_code, res.excel_name, res.pdf_name,
+            res.pdf_rowno, res.status, res.excel_code, res.pdf_code, res.excel_name, res.pdf_name,
             res.excel_qty, res.pdf_qty, diff if diff is not None else '', res.note,
         ]
         fill = STATUS_FILL.get(res.status)
@@ -518,11 +601,12 @@ def write_report(results, out_path, pdf_name, sheet_name):
             cell = ws.cell(row=r, column=c, value=v)
             if fill:
                 cell.fill = fill
-            if c == 9:
+            if c == note_col:
                 cell.alignment = Alignment(wrap_text=True, vertical='top')
+        ws.row_dimensions[r].height = _estimate_row_height(res.note, NOTE_COL_WIDTH)
         r += 1
 
-    widths = [16, 16, 16, 26, 26, 12, 14, 8, 46]
+    widths = [11, 16, 16, 16, 26, 26, 12, 14, 8, NOTE_COL_WIDTH]
     for c, w in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(c)].width = w
 
@@ -591,6 +675,7 @@ class App:
         self.status_text = StringVar(value='PDFとExcelを選択してください。')
         self.results = []
         self.last_report_path = None
+        self.config = load_config()
 
         self._build_widgets()
 
@@ -627,9 +712,10 @@ class App:
         self.progress.pack(side=TOP, fill=X, padx=8)
 
         # 結果テーブル
-        columns = ('status', 'excel_code', 'pdf_code', 'excel_name', 'pdf_name', 'excel_qty', 'pdf_qty', 'diff', 'note')
-        headers = ['状態', 'Excel品番', 'PDF品番(OCR)', 'Excel品名', 'PDF品名(OCR参考)', 'Excel支給数', 'PDF移動数(OCR)', '差異', '備考']
-        widths = [110, 120, 120, 220, 220, 90, 100, 60, 320]
+        columns = ('pdf_rowno', 'status', 'excel_code', 'pdf_code', 'excel_name', 'pdf_name', 'excel_qty', 'pdf_qty', 'diff', 'note')
+        headers = ['行№', '状態', 'Excel品番', 'PDF品番(OCR)', 'Excel品名', 'PDF品名(OCR参考)', 'Excel支給数', 'PDF移動数(OCR)', '差異', '備考']
+        widths = [60, 110, 120, 120, 220, 220, 90, 100, 60, 320]
+        anchors = {'pdf_rowno': E}
 
         frm_table = ttk.Frame(self.root)
         frm_table.pack(side=TOP, fill=BOTH, expand=True, padx=8, pady=(4, 8))
@@ -637,7 +723,7 @@ class App:
         self.tree = ttk.Treeview(frm_table, columns=columns, show='headings')
         for col, h, w in zip(columns, headers, widths):
             self.tree.heading(col, text=h)
-            self.tree.column(col, width=w, anchor=W)
+            self.tree.column(col, width=w, anchor=anchors.get(col, W))
 
         vsb = ttk.Scrollbar(frm_table, orient=VERTICAL, command=self.tree.yview)
         hsb = ttk.Scrollbar(frm_table, orient=HORIZONTAL, command=self.tree.xview)
@@ -653,17 +739,27 @@ class App:
             self.tree.tag_configure(status, background=color)
 
     # -- file pickers ----------------------------------------------------
+    def _remember_dir(self, key, file_path):
+        self.config[key] = str(Path(file_path).parent)
+        save_config(self.config)
+
     def pick_pdf(self):
-        path = filedialog.askopenfilename(title='支給部材PDFを選択', filetypes=[('PDF', '*.pdf')])
+        path = filedialog.askopenfilename(
+            title='支給部材PDFを選択', filetypes=[('PDF', '*.pdf')],
+            initialdir=self.config.get('pdf_dir', ''))
         if path:
             self.pdf_path.set(path)
+            self._remember_dir('pdf_dir', path)
             if self.xlsx_path.get():
                 self._refresh_sheet_guess()
 
     def pick_xlsx(self):
-        path = filedialog.askopenfilename(title='移動明細Excelを選択', filetypes=[('Excel', '*.xlsx *.xlsm')])
+        path = filedialog.askopenfilename(
+            title='移動明細Excelを選択', filetypes=[('Excel', '*.xlsx *.xlsm')],
+            initialdir=self.config.get('xlsx_dir', ''))
         if path:
             self.xlsx_path.set(path)
+            self._remember_dir('xlsx_dir', path)
             try:
                 names = list_sheet_names(path)
             except Exception as e:
@@ -734,13 +830,11 @@ class App:
 
     def _on_done(self, results):
         self.results = results
-        order = {'数量相違': 0, '要確認(OCR)': 1, 'PDFに見つかりません': 2,
-                 'Excelに見つかりません': 3, '一致': 4}
-        results_sorted = sorted(results, key=lambda r: order.get(r.status, 9))
+        results_sorted = sort_results(results)
         for res in results_sorted:
             diff = res.diff
             self.tree.insert('', END, values=(
-                res.status, res.excel_code, res.pdf_code, res.excel_name, res.pdf_name,
+                res.pdf_rowno, res.status, res.excel_code, res.pdf_code, res.excel_name, res.pdf_name,
                 res.excel_qty if res.excel_qty is not None else '',
                 res.pdf_qty if res.pdf_qty is not None else '',
                 diff if diff is not None else '',
@@ -761,7 +855,8 @@ class App:
         default_name = f"照合結果_{Path(self.pdf_path.get()).stem}.xlsx"
         out_path = filedialog.asksaveasfilename(
             title='照合結果の保存先', defaultextension='.xlsx',
-            initialfile=default_name, filetypes=[('Excel', '*.xlsx')])
+            initialfile=default_name, filetypes=[('Excel', '*.xlsx')],
+            initialdir=self.config.get('export_dir', ''))
         if not out_path:
             return
         try:
@@ -769,6 +864,7 @@ class App:
         except Exception as e:
             messagebox.showerror('エラー', f'出力に失敗しました:\n{e}')
             return
+        self._remember_dir('export_dir', out_path)
         self.last_report_path = out_path
         if messagebox.askyesno('完了', f'{out_path}\nに出力しました。開きますか?'):
             import os
