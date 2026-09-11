@@ -48,6 +48,32 @@ import os
 
 
 # ---------------------------------------------------------------------------
+# バージョン表示・使い方(同梱データ VERSION / 使い方.md)
+# ---------------------------------------------------------------------------
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _resource_path(filename):
+    """
+    同梱データ(VERSION・使い方.md)のパスを返す。
+    PyInstaller(--onefile)実行時は一時展開先(sys._MEIPASS)に、
+    通常のPython実行時はこのファイルと同じフォルダに置かれる。
+    """
+    base = getattr(sys, '_MEIPASS', HERE)
+    return os.path.join(base, filename)
+
+
+def get_version():
+    """VERSIONファイルの内容(例: "1.0.0")を返す。読めない場合は "?"。"""
+    try:
+        with open(_resource_path('VERSION'), encoding='utf-8') as f:
+            return f.read().strip()
+    except OSError:
+        return '?'
+
+
+# ---------------------------------------------------------------------------
 # 設定の保存(前回選択したフォルダを記憶する)
 # ---------------------------------------------------------------------------
 
@@ -666,7 +692,7 @@ def guess_sheet_from_filename(pdf_path, sheet_names):
 class App:
     def __init__(self, root):
         self.root = root
-        root.title('支給部材PDF ⇔ 移動明細Excel 照合ツール')
+        root.title('支給部材PDF ⇔ 移動明細Excel 照合ツール   Ver %s' % get_version())
         root.geometry('1180x680')
 
         self.pdf_path = StringVar()
@@ -706,6 +732,7 @@ class App:
         self.run_btn.pack(side=LEFT)
         self.export_btn = ttk.Button(frm_btn, text='結果をExcelに出力...', command=self.export_report, state='disabled')
         self.export_btn.pack(side=LEFT, padx=8)
+        ttk.Button(frm_btn, text='使い方', command=self._open_manual).pack(side=RIGHT, padx=(0, 6))
         ttk.Label(frm_btn, textvariable=self.status_text).pack(side=LEFT, padx=16)
 
         self.progress = ttk.Progressbar(self.root, orient=HORIZONTAL, mode='determinate')
@@ -869,6 +896,31 @@ class App:
         if messagebox.askyesno('完了', f'{out_path}\nに出力しました。開きますか?'):
             import os
             os.startfile(out_path)
+
+    # -- 使い方 ---------------------------------------------------------
+    def _open_manual(self):
+        win = Toplevel(self.root)
+        win.title('使い方   Ver %s' % get_version())
+        win.geometry('700x600')
+        win.transient(self.root)
+
+        frame = ttk.Frame(win)
+        frame.pack(fill=BOTH, expand=True)
+        text = tk.Text(frame, wrap=WORD, padx=10, pady=10)
+        text.pack(side=LEFT, fill=BOTH, expand=True)
+        sb = ttk.Scrollbar(frame, orient=VERTICAL, command=text.yview)
+        sb.pack(side=LEFT, fill=Y)
+        text.configure(yscrollcommand=sb.set)
+
+        try:
+            with open(_resource_path('使い方.md'), encoding='utf-8') as f:
+                content = f.read()
+        except OSError as e:
+            content = f'使い方.md の読み込みに失敗しました。\n\n{e}'
+        text.insert('1.0', content)
+        text.configure(state='disabled')
+
+        ttk.Button(win, text='閉じる', command=win.destroy).pack(pady=(0, 10))
 
 
 def main():

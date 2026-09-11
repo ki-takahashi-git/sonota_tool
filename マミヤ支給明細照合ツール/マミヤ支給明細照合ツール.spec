@@ -5,7 +5,7 @@ a = Analysis(
     ['shikyu_check_tool.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('使い方.md', '.'), ('VERSION', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
